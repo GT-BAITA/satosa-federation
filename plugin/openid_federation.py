@@ -178,28 +178,24 @@ def _build_trust_anchor_keys(trust_anchors_config):
 
 
 # ---------------------------------------------------------------------------
-# Trust Chain Resolution
+# Trust Chain Resolution via Resolve Endpoints
 # ---------------------------------------------------------------------------
 #
 # OpenID Federation trust chains prove that an entity (e.g., an RP) is a
-# legitimate member of a federation. A trust chain is an ordered sequence of
-# Entity Statements:
+# legitimate member of a federation. Rather than manually walking the chain
+# ourselves (fetching entity configs, subordinate statements, etc.), we
+# delegate this to the Trust Anchor's federation_resolve_endpoint.
 #
-#   [leaf_config, subordinate_stmt_1, authority_config_1, ..., ta_config]
+# The resolve endpoint (OpenID Federation 1.0 Section 10.1.1) does all the
+# heavy lifting server-side:
+#   1. We call GET {resolve_endpoint}?sub={entity_id}&anchor={ta_id}
+#   2. The Trust Anchor walks the chain, verifies signatures, applies policies
+#   3. It returns a signed JWT containing the resolved metadata
 #
-# Starting from the leaf entity's self-signed Entity Configuration, we walk
-# up the authority_hints to find intermediate entities, fetch subordinate
-# statements from each, and continue until we reach a pre-trusted Trust
-# Anchor whose keys we already know.
-#
-# Each step involves:
-#   1. Fetch the authority's Entity Configuration (self-signed JWT)
-#   2. Find its federation_fetch_endpoint
-#   3. Fetch a subordinate statement about the entity below it
-#   4. Verify signatures cryptographically
-#
-# Once a complete chain is built, metadata policies from subordinate
-# statements are combined and applied to produce the final resolved metadata.
+# We try each configured Trust Anchor in order. The first one that
+# successfully resolves the entity wins. If all Trust Anchors fail (no
+# resolve endpoint, network errors, or the entity isn't in their federation),
+# we raise a FederationError.
 # ---------------------------------------------------------------------------
 
 
@@ -279,141 +275,103 @@ def verify_entity_statement(jwt_str, jwks):
     return payload
 
 
-def fetch_subordinate_statement(fetch_endpoint, subject_id):
-    """Fetch a subordinate statement from a superior's federation_fetch_endpoint.
+def resolve_via_trust_anchors(entity_id, trust_anchors):
+    """Resolve an entity's metadata by querying Trust Anchor resolve endpoints.
 
-    The superior (Trust Anchor or Intermediate) publishes a fetch endpoint
-    that accepts a `sub` query parameter. It returns a signed JWT (the
-    subordinate statement) asserting the relationship and optionally
-    containing metadata_policy to constrain the subordinate's metadata.
-    """
-    resp = http_requests.get(
-        fetch_endpoint,
-        params={"sub": subject_id},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.text.strip()
+    Instead of manually walking authority_hints, we delegate trust chain
+    resolution to the Trust Anchors themselves via their federation_resolve_endpoint
+    (OpenID Federation 1.0 Section 10.1.1).
 
+    For each configured Trust Anchor:
+      1. Fetch the TA's Entity Configuration from /.well-known/openid-federation
+      2. Find its federation_resolve_endpoint in metadata.federation_entity
+      3. Call GET {resolve_endpoint}?sub={entity_id}&trust_anchor={ta_entity_id}
+      4. The response is a JWT (application/resolve-response+jwt) signed by the TA
+      5. Verify the JWT against the TA's pre-distributed keys
+      6. Extract the resolved metadata from the payload
 
-def resolve_trust_chain(entity_id, trust_anchors):
-    """Build and validate a trust chain from entity_id up to a Trust Anchor.
-
-    This implements the OpenID Federation 1.0 trust chain resolution algorithm:
-
-      1. Fetch the leaf entity's Entity Configuration (self-signed JWT)
-      2. Verify it's self-signed (iss == sub) and the signature matches its own jwks
-      3. Walk the authority_hints upward:
-         - For each authority hint, fetch its Entity Configuration
-         - Fetch a subordinate statement from the authority about the current entity
-         - Verify the subordinate statement is signed by the authority's keys
-         - Continue until we reach a known Trust Anchor
-      4. Verify the Trust Anchor's Entity Configuration against pre-distributed keys
-
-    Returns:
-        list: Ordered entity statements [leaf_config, sub_stmt, auth_config, ..., ta_config]
+    All configured Trust Anchors are tried in order. The first successful
+    resolution wins. If all fail, FederationError is raised with details
+    of each failure.
 
     Args:
-        entity_id: The entity identifier (URL) of the leaf entity (e.g., the RP)
-        trust_anchors: Dict of {entity_id: jwks_dict} for pre-trusted Trust Anchors
+        entity_id: The entity to resolve (e.g., the RP's entity identifier)
+        trust_anchors: Dict of {ta_entity_id: jwks_dict} for pre-trusted Trust Anchors
+
+    Returns:
+        dict: The resolve response payload containing 'metadata' (resolved,
+              with policies already applied by the TA), 'trust_chain' (array
+              of JWTs), and standard JWT claims (iss, sub, iat, exp).
 
     Raises:
-        FederationError: If the chain cannot be built or any verification fails
+        FederationError: If none of the Trust Anchors can resolve the entity
     """
-    # Step 1: Fetch and verify the leaf entity's self-signed configuration
-    leaf_jwt = fetch_entity_configuration(entity_id)
-    leaf_config = decode_entity_statement(leaf_jwt)
+    errors = []
 
-    # Entity Configurations MUST be self-signed: iss == sub == entity_id
-    if leaf_config.get("iss") != leaf_config.get("sub"):
-        raise FederationError("Entity Configuration iss != sub")
+    for ta_entity_id, ta_jwks in trust_anchors.items():
+        try:
+            # Step 1: Fetch the TA's Entity Configuration to find its resolve endpoint
+            ta_jwt = fetch_entity_configuration(ta_entity_id)
+            ta_config = decode_entity_statement(ta_jwt)
 
-    leaf_jwks = leaf_config.get("jwks")
-    if not leaf_jwks:
-        raise FederationError("Entity Configuration missing jwks")
+            # Verify the TA's Entity Configuration against pre-distributed keys
+            verify_entity_statement(ta_jwt, ta_jwks)
 
-    # Verify the self-signature using the leaf's own federation keys
-    verify_entity_statement(leaf_jwt, leaf_jwks)
-
-    # Short circuit: if the leaf IS a trust anchor, verify against known keys
-    if entity_id in trust_anchors:
-        verify_entity_statement(leaf_jwt, trust_anchors[entity_id])
-        return [leaf_config]
-
-    chain = [leaf_config]
-    current = leaf_config
-    visited = {entity_id}  # Prevent cycles in authority_hints
-
-    # Step 2: Walk authority_hints upward toward a Trust Anchor.
-    # Each iteration adds two entries to the chain: a subordinate statement
-    # (issued by the authority about the current entity) and the authority's
-    # own Entity Configuration.
-    max_depth = 10
-    for _ in range(max_depth):
-        authority_hints = current.get("authority_hints", [])
-        if not authority_hints:
-            raise FederationError(
-                f"No authority_hints and not a trust anchor: {current.get('iss')}"
-            )
-
-        resolved = False
-        for authority_id in authority_hints:
-            if authority_id in visited:
-                continue
-            visited.add(authority_id)
-
-            try:
-                # Fetch the authority's Entity Configuration (self-signed)
-                auth_jwt = fetch_entity_configuration(authority_id)
-                auth_config = decode_entity_statement(auth_jwt)
-                auth_jwks = auth_config.get("jwks", {})
-                verify_entity_statement(auth_jwt, auth_jwks)
-
-                # The authority must expose a federation_fetch_endpoint so we
-                # can request a subordinate statement about the current entity
-                fed_entity_meta = auth_config.get("metadata", {}).get(
-                    "federation_entity", {}
-                )
-                fetch_endpoint = fed_entity_meta.get("federation_fetch_endpoint")
-                if not fetch_endpoint:
-                    continue
-
-                # Fetch the subordinate statement: "authority says X about current"
-                sub_stmt_jwt = fetch_subordinate_statement(
-                    fetch_endpoint, current["sub"]
-                )
-                # The subordinate statement must be signed by the authority's keys
-                sub_stmt = verify_entity_statement(sub_stmt_jwt, auth_jwks)
-
-                # Sanity check: the subordinate statement's subject must match
-                if sub_stmt.get("sub") != current.get("sub"):
-                    continue
-
-                chain.append(sub_stmt)  # Subordinate statement
-                chain.append(auth_config)  # Authority's Entity Configuration
-                current = auth_config
-                resolved = True
-
-                # Check if we've reached a known Trust Anchor
-                if authority_id in trust_anchors:
-                    # Final verification: the TA's config must verify against
-                    # our pre-distributed Trust Anchor keys
-                    verify_entity_statement(auth_jwt, trust_anchors[authority_id])
-                    return chain
-
-                break  # Move up to the next level
-            except FederationError:
-                raise
-            except Exception as e:
-                logger.debug("Failed to resolve via %s: %s", authority_id, e)
+            fed_meta = ta_config.get("metadata", {}).get("federation_entity", {})
+            resolve_endpoint = fed_meta.get("federation_resolve_endpoint")
+            if not resolve_endpoint:
+                errors.append(f"{ta_entity_id}: no federation_resolve_endpoint")
                 continue
 
-        if not resolved:
-            raise FederationError(
-                "Could not resolve trust chain to any trust anchor"
+            # Step 2: Call the resolve endpoint
+            logger.debug(
+                "Calling resolve endpoint %s for sub=%s anchor=%s",
+                resolve_endpoint, entity_id, ta_entity_id,
             )
+            resp = http_requests.get(
+                resolve_endpoint,
+                params={"sub": entity_id, "trust_anchor": ta_entity_id},
+                timeout=15,
+            )
+            resp.raise_for_status()
 
-    raise FederationError("Trust chain too deep (max depth exceeded)")
+            # Step 3: The response is a signed JWT — verify against TA keys
+            resolve_jwt = resp.text.strip()
+            resolve_payload = verify_entity_statement(resolve_jwt, ta_jwks)
+
+            # Sanity check: the resolved subject must match our query
+            if resolve_payload.get("sub") != entity_id:
+                errors.append(f"{ta_entity_id}: resolve response sub mismatch")
+                continue
+
+            logger.info(
+                "Resolved trust chain for %s via Trust Anchor %s",
+                entity_id, ta_entity_id,
+            )
+            return resolve_payload
+
+        except FederationError as e:
+            errors.append(f"{ta_entity_id}: {e}")
+            logger.debug("Resolve via %s failed: %s", ta_entity_id, e)
+        except Exception as e:
+            errors.append(f"{ta_entity_id}: {e}")
+            logger.debug("Resolve via %s failed: %s", ta_entity_id, e)
+
+    raise FederationError(
+        f"Could not resolve trust chain for {entity_id} via any trust anchor: "
+        + "; ".join(errors)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Metadata Policy Helpers
+# ---------------------------------------------------------------------------
+# NOTE: These functions are NOT used in the main resolve-endpoint flow, since
+# the Trust Anchor's federation_resolve_endpoint already applies metadata
+# policies server-side. They are kept here for local validation, testing,
+# and potential future use (e.g., applying additional local policies on top
+# of the TA's resolution).
+# ---------------------------------------------------------------------------
 
 
 def apply_metadata_policies(chain):
@@ -944,10 +902,12 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         if cached and cached["exp"] > time.time():
             resolved_metadata = cached["metadata"]
         else:
-            # Full trust chain resolution: fetch entity configs, subordinate
-            # statements, verify signatures, walk up to a Trust Anchor
-            trust_chain = resolve_trust_chain(entity_id, self.trust_anchors)
-            resolved_metadata = apply_metadata_policies(trust_chain)
+            # Resolve via Trust Anchor resolve endpoints. The TA does all
+            # the chain-walking and policy application server-side.
+            resolve_result = resolve_via_trust_anchors(
+                entity_id, self.trust_anchors
+            )
+            resolved_metadata = resolve_result.get("metadata", {})
             self._rp_cache[entity_id] = {
                 "metadata": resolved_metadata,
                 "exp": time.time() + self._rp_cache_ttl,

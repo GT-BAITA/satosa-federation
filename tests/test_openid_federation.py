@@ -35,7 +35,7 @@ from openid_federation import (
     decode_entity_statement,
     keys_from_jwks,
     verify_entity_statement,
-    resolve_trust_chain,
+    resolve_via_trust_anchors,
     apply_metadata_policies,
     _apply_policy_to_metadata,
     _merge_policies,
@@ -142,6 +142,28 @@ def _make_subordinate_statement(issuer_id, subject_id, issuer_key, metadata_poli
     if extra_claims:
         claims.update(extra_claims)
     return _sign_jwt(claims, issuer_key)
+
+
+def _make_resolve_response(ta_entity_id, subject_id, ta_key, metadata,
+                            trust_chain=None, extra_claims=None):
+    """Build and sign a Resolve Response JWT (as returned by a TA's resolve endpoint).
+
+    Per OpenID Federation 1.0 Section 10.1.1, the resolve response is a signed
+    JWT containing the resolved metadata (with policies already applied).
+    """
+    now = int(time.time())
+    claims = {
+        "iss": ta_entity_id,
+        "sub": subject_id,
+        "iat": now,
+        "exp": now + 86400,
+        "metadata": metadata,
+    }
+    if trust_chain is not None:
+        claims["trust_chain"] = trust_chain
+    if extra_claims:
+        claims.update(extra_claims)
+    return _sign_jwt(claims, ta_key)
 
 
 # --- Fixtures ---
@@ -332,17 +354,31 @@ class TestAutoRegistration:
 
     @responses.activate
     def test_auto_register_via_federation(self, context, frontend, ec_keys):
-        """Unknown client_id triggers trust chain resolution and registration."""
-        rp_key = ec_keys["rp"]
+        """Unknown client_id triggers trust chain resolution via resolve endpoint."""
         ta_key = ec_keys["ta"]
 
         rp_redirect_uri = "https://rp.example.com/callback"
 
-        # RP Entity Configuration
-        rp_ec_jwt = _make_entity_configuration(
-            RP_ENTITY_ID,
-            rp_key,
-            authority_hints=[TA_ENTITY_ID],
+        # TA Entity Configuration (with resolve endpoint)
+        ta_ec_jwt = _make_entity_configuration(
+            TA_ENTITY_ID,
+            ta_key,
+            metadata={
+                "federation_entity": {
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
+                },
+            },
+        )
+        responses.add(
+            responses.GET,
+            f"{TA_ENTITY_ID}/.well-known/openid-federation",
+            body=ta_ec_jwt,
+            status=200,
+        )
+
+        # TA's resolve response for the RP
+        resolve_jwt = _make_resolve_response(
+            TA_ENTITY_ID, RP_ENTITY_ID, ta_key,
             metadata={
                 "openid_relying_party": {
                     "redirect_uris": [rp_redirect_uri],
@@ -354,36 +390,8 @@ class TestAutoRegistration:
         )
         responses.add(
             responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
-            status=200,
-        )
-
-        # TA Entity Configuration
-        ta_ec_jwt = _make_entity_configuration(
-            TA_ENTITY_ID,
-            ta_key,
-            metadata={
-                "federation_entity": {
-                    "federation_fetch_endpoint": f"{TA_ENTITY_ID}/fetch",
-                },
-            },
-        )
-        responses.add(
-            responses.GET,
-            f"{TA_ENTITY_ID}/.well-known/openid-federation",
-            body=ta_ec_jwt,
-            status=200,
-        )
-
-        # TA's subordinate statement about the RP
-        sub_stmt_jwt = _make_subordinate_statement(
-            TA_ENTITY_ID, RP_ENTITY_ID, ta_key
-        )
-        responses.add(
-            responses.GET,
-            f"{TA_ENTITY_ID}/fetch",
-            body=sub_stmt_jwt,
+            f"{TA_ENTITY_ID}/resolve",
+            body=resolve_jwt,
             status=200,
         )
 
@@ -410,56 +418,32 @@ class TestAutoRegistration:
 
     @responses.activate
     def test_auto_register_untrusted_rp_rejected(self, context, frontend, ec_keys):
-        """RP whose trust chain doesn't reach a configured TA is rejected."""
-        rp_key = ec_keys["rp"]
+        """RP that no configured TA can resolve is rejected."""
+        ta_key = ec_keys["ta"]
 
-        # RP claims an authority hint that's not a configured TA
-        unknown_authority = "https://unknown-authority.example.com"
-        _, unknown_key = _generate_ec_key()
-
-        rp_ec_jwt = _make_entity_configuration(
-            RP_ENTITY_ID,
-            rp_key,
-            authority_hints=[unknown_authority],
-            metadata={
-                "openid_relying_party": {
-                    "redirect_uris": ["https://rp.example.com/callback"],
-                },
-            },
-        )
-        responses.add(
-            responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
-            status=200,
-        )
-
-        # Unknown authority's entity config - no fetch endpoint
-        unknown_ec_jwt = _make_entity_configuration(
-            unknown_authority,
-            unknown_key,
+        # TA Entity Configuration (with resolve endpoint)
+        ta_ec_jwt = _make_entity_configuration(
+            TA_ENTITY_ID,
+            ta_key,
             metadata={
                 "federation_entity": {
-                    "federation_fetch_endpoint": f"{unknown_authority}/fetch",
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
                 },
             },
         )
         responses.add(
             responses.GET,
-            f"{unknown_authority}/.well-known/openid-federation",
-            body=unknown_ec_jwt,
+            f"{TA_ENTITY_ID}/.well-known/openid-federation",
+            body=ta_ec_jwt,
             status=200,
         )
 
-        # Subordinate statement from unknown authority
-        sub_stmt_jwt = _make_subordinate_statement(
-            unknown_authority, RP_ENTITY_ID, unknown_key
-        )
+        # TA's resolve endpoint returns 404 for this unknown RP
         responses.add(
             responses.GET,
-            f"{unknown_authority}/fetch",
-            body=sub_stmt_jwt,
-            status=200,
+            f"{TA_ENTITY_ID}/resolve",
+            body="Not found",
+            status=404,
         )
 
         authn_req = AuthorizationRequest(
@@ -478,48 +462,21 @@ class TestAutoRegistration:
         assert RP_ENTITY_ID not in frontend.provider.clients
 
     @responses.activate
-    def test_auto_register_expired_chain_rejected(self, context, frontend, ec_keys):
-        """Expired entity statements cause rejection."""
-        rp_key = ec_keys["rp"]
-
-        # RP Entity Configuration with expired timestamps
-        now = int(time.time())
-        rp_claims = {
-            "iss": RP_ENTITY_ID,
-            "sub": RP_ENTITY_ID,
-            "iat": now - 200000,
-            "exp": now - 100000,  # expired
-            "jwks": {"keys": [rp_key.serialize(private=False)]},
-            "authority_hints": [TA_ENTITY_ID],
-            "metadata": {
-                "openid_relying_party": {
-                    "redirect_uris": ["https://rp.example.com/callback"],
-                },
-            },
-        }
-        rp_ec_jwt = _sign_jwt(rp_claims, rp_key)
-        responses.add(
-            responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
-            status=200,
-        )
-
-        # TA with expired entity configuration
+    def test_auto_register_expired_resolve_rejected(self, context, frontend, ec_keys):
+        """Expired resolve response causes rejection."""
         ta_key = ec_keys["ta"]
-        ta_claims = {
-            "iss": TA_ENTITY_ID,
-            "sub": TA_ENTITY_ID,
-            "iat": now - 200000,
-            "exp": now - 100000,  # expired
-            "jwks": {"keys": [ta_key.serialize(private=False)]},
-            "metadata": {
+        now = int(time.time())
+
+        # TA Entity Configuration (valid)
+        ta_ec_jwt = _make_entity_configuration(
+            TA_ENTITY_ID,
+            ta_key,
+            metadata={
                 "federation_entity": {
-                    "federation_fetch_endpoint": f"{TA_ENTITY_ID}/fetch",
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
                 },
             },
-        }
-        ta_ec_jwt = _sign_jwt(ta_claims, ta_key)
+        )
         responses.add(
             responses.GET,
             f"{TA_ENTITY_ID}/.well-known/openid-federation",
@@ -527,18 +484,23 @@ class TestAutoRegistration:
             status=200,
         )
 
-        # Expired subordinate statement
-        sub_claims = {
+        # Expired resolve response
+        expired_claims = {
             "iss": TA_ENTITY_ID,
             "sub": RP_ENTITY_ID,
             "iat": now - 200000,
             "exp": now - 100000,  # expired
+            "metadata": {
+                "openid_relying_party": {
+                    "redirect_uris": ["https://rp.example.com/callback"],
+                },
+            },
         }
-        sub_stmt_jwt = _sign_jwt(sub_claims, ta_key)
+        expired_resolve_jwt = _sign_jwt(expired_claims, ta_key)
         responses.add(
             responses.GET,
-            f"{TA_ENTITY_ID}/fetch",
-            body=sub_stmt_jwt,
+            f"{TA_ENTITY_ID}/resolve",
+            body=expired_resolve_jwt,
             status=200,
         )
 
@@ -553,7 +515,7 @@ class TestAutoRegistration:
         context.request = dict(parse_qsl(authn_req.to_urlencoded()))
 
         resp = frontend.handle_authn_request(context)
-        # Expired chain should be rejected
+        # Expired resolve response should be rejected
         assert resp.status == "400 Bad Request"
         assert RP_ENTITY_ID not in frontend.provider.clients
 
@@ -685,15 +647,29 @@ class TestRPCache:
     @responses.activate
     def test_rp_cache_used(self, context, frontend, ec_keys):
         """Second request for same RP uses cache instead of re-fetching."""
-        rp_key = ec_keys["rp"]
         ta_key = ec_keys["ta"]
         rp_redirect_uri = "https://rp.example.com/callback"
 
-        # RP Entity Configuration
-        rp_ec_jwt = _make_entity_configuration(
-            RP_ENTITY_ID,
-            rp_key,
-            authority_hints=[TA_ENTITY_ID],
+        # TA Entity Configuration (with resolve endpoint)
+        ta_ec_jwt = _make_entity_configuration(
+            TA_ENTITY_ID,
+            ta_key,
+            metadata={
+                "federation_entity": {
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
+                },
+            },
+        )
+        responses.add(
+            responses.GET,
+            f"{TA_ENTITY_ID}/.well-known/openid-federation",
+            body=ta_ec_jwt,
+            status=200,
+        )
+
+        # Resolve response
+        resolve_jwt = _make_resolve_response(
+            TA_ENTITY_ID, RP_ENTITY_ID, ta_key,
             metadata={
                 "openid_relying_party": {
                     "redirect_uris": [rp_redirect_uri],
@@ -705,36 +681,8 @@ class TestRPCache:
         )
         responses.add(
             responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
-            status=200,
-        )
-
-        # TA Entity Configuration
-        ta_ec_jwt = _make_entity_configuration(
-            TA_ENTITY_ID,
-            ta_key,
-            metadata={
-                "federation_entity": {
-                    "federation_fetch_endpoint": f"{TA_ENTITY_ID}/fetch",
-                },
-            },
-        )
-        responses.add(
-            responses.GET,
-            f"{TA_ENTITY_ID}/.well-known/openid-federation",
-            body=ta_ec_jwt,
-            status=200,
-        )
-
-        # Subordinate statement
-        sub_stmt_jwt = _make_subordinate_statement(
-            TA_ENTITY_ID, RP_ENTITY_ID, ta_key
-        )
-        responses.add(
-            responses.GET,
-            f"{TA_ENTITY_ID}/fetch",
-            body=sub_stmt_jwt,
+            f"{TA_ENTITY_ID}/resolve",
+            body=resolve_jwt,
             status=200,
         )
 
@@ -777,40 +725,21 @@ class TestConfiguration:
 
 class TestTrustChainResolution:
     @responses.activate
-    def test_resolve_trust_chain_single_hop(self, ec_keys):
-        """RP -> Trust Anchor (direct) resolves correctly."""
-        rp_key = ec_keys["rp"]
+    def test_resolve_via_single_trust_anchor(self, ec_keys):
+        """RP resolved via a single Trust Anchor's resolve endpoint."""
         ta_key = ec_keys["ta"]
 
         trust_anchors = {
             TA_ENTITY_ID: {"keys": [ta_key.serialize(private=False)]},
         }
 
-        # RP Entity Configuration
-        rp_ec_jwt = _make_entity_configuration(
-            RP_ENTITY_ID,
-            rp_key,
-            authority_hints=[TA_ENTITY_ID],
-            metadata={
-                "openid_relying_party": {
-                    "redirect_uris": ["https://rp.example.com/callback"],
-                },
-            },
-        )
-        responses.add(
-            responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
-            status=200,
-        )
-
-        # TA Entity Configuration
+        # TA Entity Configuration (with resolve endpoint)
         ta_ec_jwt = _make_entity_configuration(
             TA_ENTITY_ID,
             ta_key,
             metadata={
                 "federation_entity": {
-                    "federation_fetch_endpoint": f"{TA_ENTITY_ID}/fetch",
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
                 },
             },
         )
@@ -821,38 +750,79 @@ class TestTrustChainResolution:
             status=200,
         )
 
-        # Subordinate statement
-        sub_stmt_jwt = _make_subordinate_statement(
-            TA_ENTITY_ID, RP_ENTITY_ID, ta_key
+        # Resolve response
+        resolve_jwt = _make_resolve_response(
+            TA_ENTITY_ID, RP_ENTITY_ID, ta_key,
+            metadata={
+                "openid_relying_party": {
+                    "redirect_uris": ["https://rp.example.com/callback"],
+                },
+            },
         )
         responses.add(
             responses.GET,
-            f"{TA_ENTITY_ID}/fetch",
-            body=sub_stmt_jwt,
+            f"{TA_ENTITY_ID}/resolve",
+            body=resolve_jwt,
             status=200,
         )
 
-        chain = resolve_trust_chain(RP_ENTITY_ID, trust_anchors)
-        assert len(chain) == 3  # leaf, sub_stmt, ta_config
-        assert chain[0]["iss"] == RP_ENTITY_ID
-        assert chain[2]["iss"] == TA_ENTITY_ID
+        result = resolve_via_trust_anchors(RP_ENTITY_ID, trust_anchors)
+        assert result["iss"] == TA_ENTITY_ID
+        assert result["sub"] == RP_ENTITY_ID
+        assert "openid_relying_party" in result["metadata"]
 
     @responses.activate
-    def test_resolve_trust_chain_multi_hop(self, ec_keys):
-        """RP -> Intermediate -> Trust Anchor resolves correctly."""
-        rp_key = ec_keys["rp"]
+    def test_resolve_fallback_to_second_trust_anchor(self, ec_keys):
+        """If first TA fails, second TA is tried and succeeds."""
         ta_key = ec_keys["ta"]
-        int_key = ec_keys["intermediate"]
+        _, ta2_key = _generate_ec_key()
+
+        ta2_entity_id = "https://trust-anchor-2.example.com"
 
         trust_anchors = {
+            # First TA has no resolve endpoint
             TA_ENTITY_ID: {"keys": [ta_key.serialize(private=False)]},
+            # Second TA has a resolve endpoint
+            ta2_entity_id: {"keys": [ta2_key.serialize(private=False)]},
         }
 
-        # RP Entity Configuration - points to intermediate
-        rp_ec_jwt = _make_entity_configuration(
-            RP_ENTITY_ID,
-            rp_key,
-            authority_hints=[INTERMEDIATE_ENTITY_ID],
+        # First TA Entity Configuration — no resolve endpoint
+        ta1_ec_jwt = _make_entity_configuration(
+            TA_ENTITY_ID,
+            ta_key,
+            metadata={
+                "federation_entity": {
+                    "organization_name": "TA without resolve",
+                },
+            },
+        )
+        responses.add(
+            responses.GET,
+            f"{TA_ENTITY_ID}/.well-known/openid-federation",
+            body=ta1_ec_jwt,
+            status=200,
+        )
+
+        # Second TA Entity Configuration — with resolve endpoint
+        ta2_ec_jwt = _make_entity_configuration(
+            ta2_entity_id,
+            ta2_key,
+            metadata={
+                "federation_entity": {
+                    "federation_resolve_endpoint": f"{ta2_entity_id}/resolve",
+                },
+            },
+        )
+        responses.add(
+            responses.GET,
+            f"{ta2_entity_id}/.well-known/openid-federation",
+            body=ta2_ec_jwt,
+            status=200,
+        )
+
+        # Second TA's resolve response
+        resolve_jwt = _make_resolve_response(
+            ta2_entity_id, RP_ENTITY_ID, ta2_key,
             metadata={
                 "openid_relying_party": {
                     "redirect_uris": ["https://rp.example.com/callback"],
@@ -861,47 +831,32 @@ class TestTrustChainResolution:
         )
         responses.add(
             responses.GET,
-            f"{RP_ENTITY_ID}/.well-known/openid-federation",
-            body=rp_ec_jwt,
+            f"{ta2_entity_id}/resolve",
+            body=resolve_jwt,
             status=200,
         )
 
-        # Intermediate Entity Configuration - points to TA
-        int_ec_jwt = _make_entity_configuration(
-            INTERMEDIATE_ENTITY_ID,
-            int_key,
-            authority_hints=[TA_ENTITY_ID],
-            metadata={
-                "federation_entity": {
-                    "federation_fetch_endpoint": f"{INTERMEDIATE_ENTITY_ID}/fetch",
-                },
-            },
-        )
-        responses.add(
-            responses.GET,
-            f"{INTERMEDIATE_ENTITY_ID}/.well-known/openid-federation",
-            body=int_ec_jwt,
-            status=200,
-        )
+        result = resolve_via_trust_anchors(RP_ENTITY_ID, trust_anchors)
+        # Should have resolved via the second TA
+        assert result["iss"] == ta2_entity_id
+        assert result["sub"] == RP_ENTITY_ID
 
-        # Intermediate's subordinate statement about RP
-        int_sub_stmt_jwt = _make_subordinate_statement(
-            INTERMEDIATE_ENTITY_ID, RP_ENTITY_ID, int_key
-        )
-        responses.add(
-            responses.GET,
-            f"{INTERMEDIATE_ENTITY_ID}/fetch",
-            body=int_sub_stmt_jwt,
-            status=200,
-        )
+    @responses.activate
+    def test_resolve_all_trust_anchors_fail(self, ec_keys):
+        """If all TAs fail to resolve, FederationError is raised."""
+        ta_key = ec_keys["ta"]
 
-        # TA Entity Configuration
+        trust_anchors = {
+            TA_ENTITY_ID: {"keys": [ta_key.serialize(private=False)]},
+        }
+
+        # TA Entity Configuration (with resolve endpoint)
         ta_ec_jwt = _make_entity_configuration(
             TA_ENTITY_ID,
             ta_key,
             metadata={
                 "federation_entity": {
-                    "federation_fetch_endpoint": f"{TA_ENTITY_ID}/fetch",
+                    "federation_resolve_endpoint": f"{TA_ENTITY_ID}/resolve",
                 },
             },
         )
@@ -912,20 +867,13 @@ class TestTrustChainResolution:
             status=200,
         )
 
-        # TA's subordinate statement about intermediate
-        ta_sub_stmt_jwt = _make_subordinate_statement(
-            TA_ENTITY_ID, INTERMEDIATE_ENTITY_ID, ta_key
-        )
+        # Resolve endpoint returns 404
         responses.add(
             responses.GET,
-            f"{TA_ENTITY_ID}/fetch",
-            body=ta_sub_stmt_jwt,
-            status=200,
+            f"{TA_ENTITY_ID}/resolve",
+            body="Not found",
+            status=404,
         )
 
-        chain = resolve_trust_chain(RP_ENTITY_ID, trust_anchors)
-        # chain should be: [rp_config, int_sub_stmt, int_config, ta_sub_stmt, ta_config]
-        assert len(chain) == 5
-        assert chain[0]["iss"] == RP_ENTITY_ID
-        assert chain[2]["iss"] == INTERMEDIATE_ENTITY_ID
-        assert chain[4]["iss"] == TA_ENTITY_ID
+        with pytest.raises(FederationError, match="Could not resolve"):
+            resolve_via_trust_anchors(RP_ENTITY_ID, trust_anchors)

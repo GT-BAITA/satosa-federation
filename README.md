@@ -22,7 +22,8 @@ sequenceDiagram
 
     Note over RP,IdP: Authorization
     RP->>SATOSA: GET /OIDFed/authorization?client_id=...&request=<JWT>
-    SATOSA->>SATOSA: Resolve RP trust chain & auto-register
+    SATOSA->>SATOSA: Fetch TA config, call resolve endpoint<br/>GET {ta}/resolve?sub={rp}&trust_anchor={ta}
+    SATOSA->>SATOSA: Verify resolve response, auto-register RP
     SATOSA->>SATOSA: Verify & unpack request object JWT
     SATOSA->>IdP: SAML AuthnRequest (HTTP-Redirect)
     IdP->>IdP: User authenticates
@@ -333,15 +334,17 @@ The JWT is signed with the federation EC key using ES256, with the header
 #### 2. Automatic Client Registration
 
 When an unknown RP sends an authorization request, instead of rejecting it, the
-plugin resolves the RP's trust chain:
+plugin resolves the RP's trust chain by delegating to the Trust Anchor's resolve
+endpoint (OpenID Federation 1.0 Section 8.3.1):
 
-1. Fetch the RP's Entity Configuration from `{rp_id}/.well-known/openid-federation`
-2. Verify it's self-signed (iss == sub, signature matches its own jwks)
-3. Walk `authority_hints` upward, fetching subordinate statements from each authority
-4. Continue until reaching a configured Trust Anchor
-5. Verify the Trust Anchor's configuration against pre-distributed keys
-6. Apply metadata policies from subordinate statements to produce resolved metadata
-7. Register the RP in pyop's client database using the resolved metadata
+1. For each configured Trust Anchor, fetch its Entity Configuration from
+   `{ta_id}/.well-known/openid-federation`
+2. Verify the TA's Entity Configuration against pre-distributed keys
+3. Find the TA's `federation_resolve_endpoint` in its `federation_entity` metadata
+4. Call `GET {resolve_endpoint}?sub={rp_id}&trust_anchor={ta_id}` to resolve the
+   RP's trust chain and metadata (with policies already applied by the TA)
+5. Verify the resolve response JWT against the TA's keys
+6. Extract the resolved metadata and register the RP in pyop's client database
 
 Resolved metadata is cached per-RP with a configurable TTL.
 
