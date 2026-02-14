@@ -1,0 +1,21 @@
+module: satosa.backends.saml2.SAMLBackend
+name: Saml2
+config:
+  sp_config:
+    key_file: /opt/satosa/etc/keys/saml_backend.key
+    cert_file: /opt/satosa/etc/keys/saml_backend.crt
+    entityid: <base_url>/Saml2/proxy_saml2_backend.xml
+    accepted_time_diff: 60
+
+    metadata:
+      local: [/opt/satosa/etc/idp_metadata.xml]
+
+    service:
+      sp:
+        authn_requests_signed: true
+        want_response_signed: true
+        allow_unsolicited: true
+        endpoints:
+          assertion_consumer_service:
+            - [<base_url>/Saml2/acs/post, 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST']
+            - [<base_url>/Saml2/acs/redirect, 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect']

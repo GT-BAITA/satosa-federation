@@ -1,0 +1,12 @@
+services:
+  satosa-proxy:
+    build: .
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./etc:/opt/satosa/etc
+      - ./plugin:/opt/satosa/plugin
+    environment:
+      SATOSA_STATE_ENCRYPTION_KEY: "${SATOSA_STATE_ENCRYPTION_KEY}"
+      SATOSA_CONFIG: "/opt/satosa/etc/proxy_conf.yaml"
+    restart: unless-stopped
