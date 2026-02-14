@@ -41,64 +41,13 @@ sequenceDiagram
     SATOSA-->>RP: User claims (JSON)
 ```
 
-### Trust Chain Resolution
-
-```mermaid
-graph BT
-    RP["RP (Leaf Entity)<br/>Entity Configuration<br/><i>self-signed</i>"]
-    INT["Intermediate<br/>Entity Configuration<br/><i>self-signed</i>"]
-    TA["Trust Anchor<br/>Entity Configuration<br/><i>pre-distributed keys</i>"]
-
-    RP -->|"authority_hints"| INT
-    INT -->|"authority_hints"| TA
-
-    SUB1["Subordinate Statement<br/><i>Intermediate about RP</i><br/>signed by Intermediate's keys"]
-    SUB2["Subordinate Statement<br/><i>Trust Anchor about Intermediate</i><br/>signed by Trust Anchor's keys"]
-
-    INT -.->|"federation_fetch_endpoint?sub=RP"| SUB1
-    TA -.->|"federation_fetch_endpoint?sub=Intermediate"| SUB2
-
-    style TA fill:#2d6a4f,color:#fff
-    style INT fill:#40916c,color:#fff
-    style RP fill:#52b788,color:#fff
-    style SUB1 fill:#b7e4c7,color:#333
-    style SUB2 fill:#b7e4c7,color:#333
-```
-
-### Component Overview
-
-```mermaid
-graph LR
-    subgraph "Downstream (OIDC + Federation)"
-        RP[Relying Party]
-    end
-
-    subgraph "SATOSA Proxy"
-        FE["OpenID Federation<br/>Frontend Plugin"]
-        BASE[SATOSABase<br/>Orchestrator]
-        MS[Micro Services<br/>Pipeline]
-        BE[SAML2 Backend]
-    end
-
-    subgraph "Upstream (SAML2)"
-        IDP[SAML IdP]
-    end
-
-    RP <-->|"OIDC + Federation"| FE
-    FE <--> BASE
-    BASE <--> MS
-    MS <--> BE
-    BE <-->|"SAML2"| IDP
-
-    style FE fill:#2563eb,color:#fff
-    style BASE fill:#7c3aed,color:#fff
-    style MS fill:#7c3aed,color:#fff
-    style BE fill:#dc2626,color:#fff
-```
-
 SATOSA acts as a protocol translator: RPs speak OpenID Connect (with federation
 trust), while the upstream IdP speaks SAML2. The proxy handles all protocol
 conversion transparently.
+
+```
+RP ──OIDC + Federation──► Frontend Plugin ──► SATOSABase ──► SAML2 Backend ──SAML2──► IdP
+```
 
 ## Directory Structure
 
