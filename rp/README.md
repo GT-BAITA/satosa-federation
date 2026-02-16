@@ -2,26 +2,6 @@
 
 A SATOSA proxy deployment that bridges SAML Service Providers to OpenID Federation OPs. The SAML frontend presents an IdP to downstream SAML SPs, while the OpenID Federation backend acts as a federation-aware RP connecting to upstream OPs via trust chain resolution.
 
-## Architecture
-
-```mermaid
-graph TD
-    SP["SAML SP<br/><small>samlsp.labb.sunet.se</small>"]
-    SATOSA["SATOSA RP Proxy<br/><small>satosarp.labb.sunet.se</small>"]
-    FE["SAML Frontend<br/><small>Saml2IDP — acts as IdP</small>"]
-    BE["OpenID Federation Backend<br/><small>OIDFedRP — acts as RP</small>"]
-    OP["Federation OP<br/><small>satosa.labb.sunet.se</small>"]
-    TA["Trust Anchor<br/><small>realta.labb.sunet.se</small>"]
-
-    SP -- "SAML AuthnRequest" --> FE
-    subgraph SATOSA
-        FE --> BE
-    end
-    BE -- "OIDC authorization code flow<br/><small>signed request objects, PKCE, private_key_jwt</small>" --> OP
-    OP -. "trust chain resolution" .-> TA
-    BE -. "trust chain resolution" .-> TA
-```
-
 ### Request flow
 
 ```mermaid
