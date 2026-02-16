@@ -558,6 +558,11 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         self.organization_name = fed_conf.get("organization_name", "")
         self.organization_uri = fed_conf.get("organization_uri", "")
         self.trust_marks = fed_conf.get("trust_marks", [])
+        for i, tm in enumerate(self.trust_marks):
+            if not isinstance(tm, dict) or "id" not in tm or "trust_mark" not in tm:
+                raise ValueError(
+                    f"trust_marks[{i}]: each entry must have 'id' and 'trust_mark' keys"
+                )
 
         # Load the EC P-256 federation signing key (separate from pyop's RSA OIDC key).
         # This key signs the Entity Configuration JWT at /.well-known/openid-federation.

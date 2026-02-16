@@ -197,6 +197,30 @@ The `federation` block configures OpenID Federation-specific behavior:
   Configuration JWT expires.
 - **`rp_cache_ttl`**: How long to cache a resolved RP's metadata before
   re-resolving its trust chain.
+- **`trust_marks`**: Array of trust mark objects to include in the Entity
+  Configuration JWT.
+
+### Trust Marks
+
+Trust marks are pre-signed JWTs issued by a Trust Mark Issuer asserting that this entity complies with specific requirements (e.g., certification level, interoperability). They are included in the Entity Configuration JWT so that other federation participants (RPs, Trust Anchors) can verify them.
+
+```yaml
+federation:
+  # ... other federation config ...
+  trust_marks:
+    - id: "https://trust-mark-issuer.example.com/marks/certified-op"
+      trust_mark: "eyJhbGciOiJFUzI1NiIsInR5cCI6InRydXN0LW1hcmsrand..."
+    - id: "https://another-issuer.example.com/marks/security-level-2"
+      trust_mark: "eyJhbGciOiJFUzI1NiIsInR5cCI6InRydXN0LW1hcmsrand..."
+```
+
+Each entry requires:
+- **`id`**: URI identifying the trust mark type
+- **`trust_mark`**: The pre-signed JWT string obtained from the Trust Mark Issuer
+
+When configured, the trust marks appear in the `trust_marks` claim of the Entity Configuration JWT served at `/.well-known/openid-federation`. If no trust marks are configured (empty list or omitted), the claim is not included.
+
+The plugin validates at startup that each entry has both `id` and `trust_mark` keys, raising a `ValueError` if the format is invalid.
 
 ### Attribute Mapping (`etc/internal_attributes.yaml`)
 

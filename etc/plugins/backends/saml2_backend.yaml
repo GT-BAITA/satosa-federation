@@ -8,7 +8,8 @@ config:
     accepted_time_diff: 60
 
     metadata:
-      local: [/opt/satosa/etc/idp_metadata.xml]
+      remote:
+        - url: "https://samlidp.labb.sunet.se/metadata"
 
     service:
       sp:
