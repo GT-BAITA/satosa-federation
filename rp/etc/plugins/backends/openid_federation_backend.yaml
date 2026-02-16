@@ -1,0 +1,50 @@
+module: openid_federation_backend.OpenIDFederationBackend
+name: OIDFedRP
+config:
+  op_entity_id: "https://satosa.labb.sunet.se"
+  entity_id: "https://satosarp.labb.sunet.se"
+  scope: "openid email profile"
+
+  discovery:
+    enable: true
+    collection_endpoint: "https://realta.labb.sunet.se/collection"
+    cache_ttl: 3600
+    page_title: "Select Identity Provider"
+
+  federation:
+    signing_key_path: /opt/satosa/etc/keys/rp_federation_ec.key
+    signing_key_id: rp-fed-key-1
+    signing_algorithm: ES256
+
+    authority_hints:
+      - "https://realta.labb.sunet.se"
+
+    trust_anchors:
+      "https://realta.labb.sunet.se":
+        keys:
+          - kty: RSA
+            alg: RS256
+            use: sig
+            kid: "jx4OZapVWSZAbLJGt7hFfI-khthAXwgFac7P9HQ3A60"
+            e: "AQAB"
+            n: "ow4cllR_Pbvh35UBhiMP_-xwIMZu5CaIHY9ySXdUr8Qcb5XYVgCcB8dhwexSyuB3_aQbP3nxvSWE8GkcytY-k0WHamHCW044IR0N09rROtXarwp2wmpTu2CLw-42GMkqubPQgC0BfuO62X_usA9w4PSbSXmHiEzm7h_sisgH1MSYVcO5EXaSvCdwiCjb1lSiU82mDFwMkLvQAba0xcwiAZOwAdjDbRUI0R_IXi3MmwjC42_w0gzFMuHV_WUGjAVHcAHHbXShqISHhUBfVzU0FTYZYDf1NYnU6Ndj_3m6OoDWhDfAVr2IN5-V9dIhRER4Jxkkt1NAhFdZED2Pd5IuYw"
+
+      "https://ta.tiime2026.aai.garr.it":
+        keys:
+          - kty: EC
+            alg: ES256
+            crv: "P-256"
+            use: sig
+            kid: "xlQ8lW5rU3tUqDqDBWE7a8C8WPVFgix_COUxCBwqoxY"
+            x: "FvOHLWoyvf_F6n1f3qubyE6x2mzD9wyN5_7lzcDStlg"
+            y: "AxAtalud70yjM2DU5FUXxacgn9dqHlZXU_U9rx8UPSA"
+          - kty: EC
+            alg: ES256
+            crv: "P-256"
+            use: sig
+            kid: "oJpJsdH2JMH5dkeR-bBQm2B7HVBrB6MvgaZGTMXlGrQ"
+            x: "p8hbLxdJvrYRyZkeMIpy1quLksVTWWSQfHVbrTNXekA"
+            y: "wSFKbFvG-7sFeuHkQ8UDB_PKtKb4VBXmC2juNpFLkNY"
+
+    entity_configuration_lifetime: 86400
+    organization_name: "SATOSA RP Proxy"

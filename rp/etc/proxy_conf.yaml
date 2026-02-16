@@ -1,0 +1,15 @@
+BASE: "https://satosarp.labb.sunet.se"
+COOKIE_STATE_NAME: "SATOSA_STATE"
+STATE_ENCRYPTION_KEY: !ENV SATOSA_STATE_ENCRYPTION_KEY
+CONTEXT_STATE_DELETE: true
+
+CUSTOM_PLUGIN_MODULE_PATHS:
+  - "/opt/satosa/plugin"
+
+INTERNAL_ATTRIBUTES: "/opt/satosa/etc/internal_attributes.yaml"
+
+BACKEND_MODULES:
+  - "/opt/satosa/etc/plugins/backends/openid_federation_backend.yaml"
+
+FRONTEND_MODULES:
+  - "/opt/satosa/etc/plugins/frontends/saml2_frontend.yaml"

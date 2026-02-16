@@ -1,0 +1,42 @@
+module: satosa.frontends.saml2.SAMLFrontend
+name: Saml2IDP
+config:
+  endpoints:
+    single_sign_on_service:
+      'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST': Saml2IDP/sso/post
+      'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect': Saml2IDP/sso/redirect
+
+  entityid_endpoint: true
+
+  idp_config:
+    organization:
+      display_name: SATOSA RP Proxy
+      name: SATOSA RP Proxy
+      url: 'https://satosarp.labb.sunet.se'
+
+    key_file: /opt/satosa/etc/keys/saml_frontend.key
+    cert_file: /opt/satosa/etc/keys/saml_frontend.crt
+
+    entityid: <base_url>/<name>/proxy.xml
+    accepted_time_diff: 60
+
+    metadata:
+      remote:
+        - url: "https://samlsp.labb.sunet.se/accounts/saml/sunet/metadata/"
+
+    service:
+      idp:
+        endpoints:
+          single_sign_on_service: []
+        name: SATOSA Federation RP Proxy
+        name_id_format:
+          - 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent'
+          - 'urn:oasis:names:tc:SAML:2.0:nameid-format:transient'
+        policy:
+          default:
+            attribute_restrictions: null
+            fail_on_missing_requested: false
+            lifetime: {minutes: 15}
+            name_form: urn:oasis:names:tc:SAML:2.0:attrname-format:uri
+            encrypt_assertion: false
+            encrypted_advice_attributes: false

@@ -1,0 +1,4 @@
+satosarp.labb.sunet.se {
+	rewrite /.well-known/openid-federation /OIDFedRP/entity-configuration
+	reverse_proxy localhost:9003
+}
