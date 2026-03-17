@@ -2,10 +2,10 @@
 Setup simples para instalar a lib desde a raiz
 """
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
-    name="satosa-federation",
+    name="sunet",
     version="1.0.0",
     description="OpenID Federation ↔ OpenID Connect bridge for SATOSA.",
     url="https://github.com/GT-BAITA/satosa-federation",
