@@ -14,10 +14,10 @@ setup(
         "requests>=2.0.0",
         "cryptography>=43.0.3",
         "pyopenssl>=24.2.1",
-        "cryptojwt>=1.9,<1.11",
         "pydantic>=2.0",
         "pem>=23.1,<23.2",
         "aiohttp>=3.11.11,<4.0.0",
+        "PyJWT",
         "pyeudiw[satosa] @ git+https://github.com/italia/eudi-wallet-it-python@c9d46cc61f0c77ecec21d43c72f49a85f462bc48",
     ],
     extras_require={
