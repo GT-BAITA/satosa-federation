@@ -557,6 +557,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         )
         self.organization_name = fed_conf.get("organization_name", "")
         self.organization_uri = fed_conf.get("organization_uri", "")
+        self.logo_uri = fed_conf.get("logo_uri", "")
         self.trust_marks = fed_conf.get("trust_marks", [])
         for i, tm in enumerate(self.trust_marks):
             if not isinstance(tm, dict) or "id" not in tm or "trust_mark" not in tm:
@@ -619,12 +620,17 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
                 "token_endpoint_auth_methods_supported", []
             ).append("private_key_jwt")
 
-        # Federation entity metadata
         federation_entity_metadata = {}
+
         if self.organization_name:
+            oidc_provider_metadata["organization_name"] = self.organization_name
             federation_entity_metadata["organization_name"] = self.organization_name
         if self.organization_uri:
+            oidc_provider_metadata["homepage_uri"] = self.organization_uri
             federation_entity_metadata["homepage_uri"] = self.organization_uri
+        if self.logo_uri:
+            oidc_provider_metadata["logo_uri"] = self.logo_uri
+            federation_entity_metadata["logo_uri"] = self.logo_uri
 
         # Entity Configuration claims
         ec_claims = {
