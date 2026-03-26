@@ -10,6 +10,7 @@ setup(
     description="OpenID Federation ↔ OpenID Connect bridge for SATOSA.",
     url="https://github.com/GT-BAITA/satosa-federation",
     packages=find_packages(),
+    include_package_data=True,
     install_requires=[
         "requests>=2.0.0",
         "cryptography>=43.0.3",
