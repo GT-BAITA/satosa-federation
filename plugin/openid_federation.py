@@ -868,7 +868,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         aud = payload.get("aud")
         if isinstance(aud, str):
             aud = [aud]
-        token_url = f"{self.entity_id}/OIDFed/token"
+        token_url = f"{self.entity_id}/token"
         if not aud or token_url not in aud:
             raise FederationError(
                 f"client_assertion aud={aud} does not contain {token_url}"
