@@ -868,6 +868,8 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         aud = payload.get("aud")
         if isinstance(aud, str):
             aud = [aud]
+
+        # Removido path Hardcoded para token endpoint (/OIDFed/token)
         token_url = f"{self.entity_id}/token"
         if not aud or token_url not in aud:
             raise FederationError(
