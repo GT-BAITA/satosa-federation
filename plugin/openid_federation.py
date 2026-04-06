@@ -753,7 +753,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         merged = dict(request)
         del merged["request"]
         for key, value in payload.items():
-            if key not in ("iss", "aud", "iat", "exp", "jti"):
+            if key not in ("iss", "aud", "iat", "exp", "jti", "claims"):
                 merged[key] = value
 
         logger.debug(
