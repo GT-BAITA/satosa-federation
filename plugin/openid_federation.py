@@ -747,8 +747,12 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         merged = dict(request)
         del merged["request"]
         for key, value in payload.items():
-            if key not in ("iss", "aud", "iat", "exp", "jti", "claims"):
-                merged[key] = value
+            if key not in ("iss", "aud", "iat", "exp", "jti"):
+                # Campos que não são string devem ser convertidos de um dict para json, para o pyop processar corretamente
+                if isinstance(value, (dict, list)):
+                    merged[key] = json.dumps(value)
+                else:
+                    merged[key] = value
 
         logger.debug(
             "Unpacked request object for %s, params: %s",
