@@ -619,8 +619,8 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
                 "token_endpoint_auth_methods_supported", []
             ).append("private_key_jwt")
 
-        # Federation entity metadata
         federation_entity_metadata = {}
+
         if self.organization_name:
             federation_entity_metadata["organization_name"] = self.organization_name
         if self.organization_uri:
@@ -748,7 +748,11 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         del merged["request"]
         for key, value in payload.items():
             if key not in ("iss", "aud", "iat", "exp", "jti"):
-                merged[key] = value
+                # Campos que não são string devem ser convertidos de um dict para json, para o pyop processar corretamente
+                if isinstance(value, (dict, list)):
+                    merged[key] = json.dumps(value)
+                else:
+                    merged[key] = value
 
         logger.debug(
             "Unpacked request object for %s, params: %s",
@@ -862,7 +866,9 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         aud = payload.get("aud")
         if isinstance(aud, str):
             aud = [aud]
-        token_url = f"{self.entity_id}/OIDFed/token"
+
+        # Removido path Hardcoded para token endpoint (/OIDFed/token)
+        token_url = f"{self.entity_id}/token"
         if not aud or token_url not in aud:
             raise FederationError(
                 f"client_assertion aud={aud} does not contain {token_url}"
