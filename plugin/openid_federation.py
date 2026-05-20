@@ -868,10 +868,14 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
             aud = [aud]
 
         # Removido path Hardcoded para token endpoint (/OIDFed/token)
-        token_url = f"{self.entity_id}/token"
-        if not aud or token_url not in aud:
+        # Pegamos a URL esperada dos metadados da entidade
+        expected_audiences = [
+            self.provider.provider_configuration.get("token_endpoint"),
+        ]
+
+        if not aud or not any(valid_aud in aud for valid_aud in expected_audiences):
             raise FederationError(
-                f"client_assertion aud={aud} does not contain {token_url}"
+                f"client_assertion aud={aud} does not contain a valid audience. Expected one of: {expected_audiences}"
             )
 
         logger.debug(
