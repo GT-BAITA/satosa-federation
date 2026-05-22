@@ -486,9 +486,7 @@ def _apply_policy_to_metadata(metadata, policy):
                         f"{operators['superset_of']}"
                     )
         if operators.get("essential") and param not in result:
-            raise FederationError(
-                f"Policy violation: {param} is essential but missing"
-            )
+            raise FederationError(f"Policy violation: {param} is essential but missing")
     return result
 
 
