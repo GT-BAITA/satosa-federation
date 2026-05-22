@@ -486,7 +486,9 @@ def _apply_policy_to_metadata(metadata, policy):
                         f"{operators['superset_of']}"
                     )
         if operators.get("essential") and param not in result:
-            raise FederationError(f"Policy violation: {param} is essential but missing")
+            raise FederationError(
+                f"Policy violation: {param} is essential but missing"
+            )
     return result
 
 
@@ -860,13 +862,15 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
                 f"client_assertion sub={payload.get('sub')} != client_id={client_id}"
             )
 
-        # RFC 7523 Section 3: aud MUST contain the token endpoint URL
+        # RFC 7523: aud MUST identificar o servidor de autorização como destinatário pretendido.
+        # Normaliza para lista porque a spec permite aud como string ou array.
         aud = payload.get("aud")
         if isinstance(aud, str):
             aud = [aud]
 
-        # Removido path Hardcoded para token endpoint (/OIDFed/token)
-        # Pegamos a URL esperada dos metadados da entidade
+        # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
+        # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
+        # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
         expected_audiences = [
             self.provider.provider_configuration.get("token_endpoint"),
         ]
