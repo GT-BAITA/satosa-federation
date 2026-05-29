@@ -862,16 +862,22 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
                 f"client_assertion sub={payload.get('sub')} != client_id={client_id}"
             )
 
-        # RFC 7523 Section 3: aud MUST contain the token endpoint URL
+        # RFC 7523: aud MUST identificar o servidor de autorização como destinatário pretendido.
+        # Normaliza para lista porque a spec permite aud como string ou array.
         aud = payload.get("aud")
         if isinstance(aud, str):
             aud = [aud]
 
-        # Removido path Hardcoded para token endpoint (/OIDFed/token)
-        token_url = f"{self.entity_id}/token"
-        if not aud or token_url not in aud:
+        # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
+        # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
+        # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
+        expected_audiences = [
+            self.provider.provider_configuration.get("token_endpoint"),
+        ]
+
+        if not aud or not any(valid_aud in aud for valid_aud in expected_audiences):
             raise FederationError(
-                f"client_assertion aud={aud} does not contain {token_url}"
+                f"client_assertion aud={aud} does not contain a valid audience. Expected one of: {expected_audiences}"
             )
 
         logger.debug(
