@@ -872,6 +872,11 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
         # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
         # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
+
+        # Verificação importante pois garante que o padrão token da instancia possa ser configurado para
+        # suportar configurações diferentes de path como o padrão usado na cafe-2.0 que espera um hint na request.
+        # Caso não tenha configurações de rota token, utilizamos o padrão gerado pelo pyop, assim mantemos a verificação
+        # de aud consistente.
         if "token_endpoint" in self.config["provider"]:
             expected_audiences = [self.config["provider"]["token_endpoint"]]
         else:
