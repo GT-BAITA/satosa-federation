@@ -548,6 +548,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
 
         # Federation-specific configuration
         fed_conf = conf["federation"]
+        self.config = conf
         self.entity_id = fed_conf.get("entity_id", base_url)
         self.authority_hints = fed_conf["authority_hints"]
         self.trust_anchors = _build_trust_anchor_keys(fed_conf["trust_anchors"])
@@ -871,9 +872,17 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
         # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
         # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
-        expected_audiences = [
-            self.provider.provider_configuration.get("token_endpoint"),
-        ]
+
+        # Verificação importante pois garante que o padrão de path da rota token da instancia possa ser configurado para
+        # suportar configurações diferentes de path, como o padrão usado na cafe-2.0 que espera que o path da request traga
+        # o identificador da entidade representada pelo proxy. Caso não tenha configurações de rota token, utilizamos o
+        # padrão gerado pelo pyop, assim mantemos a verificação de aud consistente.
+        if "token_endpoint" in self.config["provider"]:
+            expected_audiences = [self.config["provider"]["token_endpoint"]]
+        else:
+            expected_audiences = [
+                self.provider.provider_configuration.get("token_endpoint"),
+            ]
 
         if not aud or not any(valid_aud in aud for valid_aud in expected_audiences):
             raise FederationError(
