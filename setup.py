@@ -6,7 +6,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="sunet",
-    version="1.0.0",
+    version="1.0.1",
     description="OpenID Federation ↔ OpenID Connect bridge for SATOSA.",
     url="https://github.com/GT-BAITA/satosa-federation",
     packages=["sunet", "sunet.plugin"],
