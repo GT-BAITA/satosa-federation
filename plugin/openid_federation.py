@@ -275,47 +275,50 @@ def verify_entity_statement(jwt_str, jwks):
     return payload
 
 
-def resolve_via_trust_anchors(entity_id, trust_anchors):
+def resolve_via_trust_anchors(entity_id, trust_anchor_ids):
     """Resolve an entity's metadata by querying Trust Anchor resolve endpoints.
-
+    
     Instead of manually walking authority_hints, we delegate trust chain
     resolution to the Trust Anchors themselves via their federation_resolve_endpoint
     (OpenID Federation 1.0 Section 10.1.1).
-
+    
     For each configured Trust Anchor:
       1. Fetch the TA's Entity Configuration from /.well-known/openid-federation
-      2. Find its federation_resolve_endpoint in metadata.federation_entity
-      3. Call GET {resolve_endpoint}?sub={entity_id}&trust_anchor={ta_entity_id}
-      4. The response is a JWT (application/resolve-response+jwt) signed by the TA
-      5. Verify the JWT against the TA's pre-distributed keys
-      6. Extract the resolved metadata from the payload
-
+      2. Extract the TA's public keys from its JWKS
+      3. Find its federation_resolve_endpoint in metadata.federation_entity
+      4. Call GET {resolve_endpoint}?sub={entity_id}&trust_anchor={ta_entity_id}
+      5. The response is a JWT (application/resolve-response+jwt) signed by the TA
+      6. Verify the JWT against the TA's public keys (fetched in step 1)
+      7. Extract the resolved metadata from the payload
+    
     All configured Trust Anchors are tried in order. The first successful
     resolution wins. If all fail, FederationError is raised with details
     of each failure.
-
+    
     Args:
         entity_id: The entity to resolve (e.g., the RP's entity identifier)
-        trust_anchors: Dict of {ta_entity_id: jwks_dict} for pre-trusted Trust Anchors
-
+        trust_anchor_ids: List of TA entity IDs (e.g., ["https://ta1.example.com", "https://ta2.example.com"])
+        
     Returns:
         dict: The resolve response payload containing 'metadata' (resolved,
               with policies already applied by the TA), 'trust_chain' (array
               of JWTs), and standard JWT claims (iss, sub, iat, exp).
-
+              
     Raises:
         FederationError: If none of the Trust Anchors can resolve the entity
     """
     errors = []
 
-    for ta_entity_id, ta_jwks in trust_anchors.items():
+    for ta_entity_id in trust_anchor_ids:
         try:
-            # Step 1: Fetch the TA's Entity Configuration to find its resolve endpoint
+            # Step 1: Fetch the TA's Entity Configuration and extract its keys
             ta_jwt = fetch_entity_configuration(ta_entity_id)
             ta_config = decode_entity_statement(ta_jwt)
-
-            # Verify the TA's Entity Configuration against pre-distributed keys
-            verify_entity_statement(ta_jwt, ta_jwks)
+            ta_jwks = ta_config.get("jwks", {})
+            
+            if not ta_jwks or not ta_jwks.get("keys"):
+                errors.append(f"{ta_entity_id}: no JWKS in Entity Configuration")
+                continue
 
             fed_meta = ta_config.get("metadata", {}).get("federation_entity", {})
             resolve_endpoint = fed_meta.get("federation_resolve_endpoint")
@@ -361,7 +364,6 @@ def resolve_via_trust_anchors(entity_id, trust_anchors):
         f"Could not resolve trust chain for {entity_id} via any trust anchor: "
         + "; ".join(errors)
     )
-
 
 # ---------------------------------------------------------------------------
 # Metadata Policy Helpers
@@ -551,7 +553,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         self.config = conf
         self.entity_id = fed_conf.get("entity_id", base_url)
         self.authority_hints = fed_conf["authority_hints"]
-        self.trust_anchors = _build_trust_anchor_keys(fed_conf["trust_anchors"])
+        self.trust_anchor_ids = fed_conf.get("trust_anchors")
         self.federation_signing_alg = fed_conf.get("signing_algorithm", "ES256")
         self.entity_configuration_lifetime = fed_conf.get(
             "entity_configuration_lifetime", 86400
@@ -923,15 +925,12 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
             FederationError: If trust chain resolution fails, policies are
                 violated, or required metadata (redirect_uris) is missing
         """
-        # Check the cache to avoid redundant trust chain resolution
         cached = self._rp_cache.get(entity_id)
         if cached and cached["exp"] > time.time():
             resolved_metadata = cached["metadata"]
         else:
-            # Resolve via Trust Anchor resolve endpoints. The TA does all
-            # the chain-walking and policy application server-side.
             resolve_result = resolve_via_trust_anchors(
-                entity_id, self.trust_anchors
+                entity_id, self.trust_anchor_ids
             )
             resolved_metadata = resolve_result.get("metadata", {})
             self._rp_cache[entity_id] = {
@@ -944,8 +943,6 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
             raise FederationError("RP metadata missing redirect_uris")
 
         # Register the RP in pyop's client database.
-        # Note: token_endpoint_auth_method is set to "none" for pyop compatibility.
-        # The real method is stored in federation_auth_method for our reference.
         real_auth_method = rp_metadata.get(
             "token_endpoint_auth_method", "private_key_jwt"
         )
@@ -953,11 +950,11 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
             "client_id": entity_id,
             "response_types": rp_metadata.get("response_types", ["code"]),
             "redirect_uris": rp_metadata["redirect_uris"],
-            "token_endpoint_auth_method": "none",  # pyop workaround
-            "federation_auth_method": real_auth_method,  # actual method
+            "token_endpoint_auth_method": "none",
+            "federation_auth_method": real_auth_method,
             "client_name": rp_metadata.get("client_name", entity_id),
             "subject_type": rp_metadata.get("subject_type", "pairwise"),
-            "jwks": rp_metadata.get("jwks", {}),  # RP's federation public keys
+            "jwks": rp_metadata.get("jwks", {}),
             "jwks_uri": rp_metadata.get("jwks_uri"),
         }
 
