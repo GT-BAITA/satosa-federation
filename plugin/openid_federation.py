@@ -303,7 +303,7 @@ def resolve_via_trust_anchors(entity_id, trust_anchors):
         dict: The resolve response payload containing 'metadata' (resolved,
               with policies already applied by the TA), 'trust_chain' (array
               of JWTs), and standard JWT claims (iss, sub, iat, exp).
-  
+
     Raises:
         FederationError: If none of the Trust Anchors can resolve the entity
     """
@@ -551,10 +551,9 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
 
         # Federation-specific configuration
         fed_conf = conf["federation"]
-        self.config = conf
         self.entity_id = fed_conf.get("entity_id", base_url)
         self.authority_hints = fed_conf["authority_hints"]
-        self.trust_anchor = fed_conf.get("trust_anchors")
+        self.trust_anchors = fed_conf.get("trust_anchors")
         self.federation_signing_alg = fed_conf.get("signing_algorithm", "ES256")
         self.entity_configuration_lifetime = fed_conf.get(
             "entity_configuration_lifetime", 86400
