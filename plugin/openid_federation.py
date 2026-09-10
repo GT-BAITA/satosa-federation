@@ -874,9 +874,10 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
         # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
         # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
-        expected_audiences = [
-            self.provider.provider_configuration.get("token_endpoint"),
-        ]
+        if "token_endpoint" in self.config.get("provider", {}):
+            expected_audiences = [self.config["provider"]["token_endpoint"]]
+        else:
+            expected_audiences = [self.provider.provider_configuration.get("token_endpoint")]
 
         if not aud or not any(valid_aud in aud for valid_aud in expected_audiences):
             raise FederationError(
