@@ -284,11 +284,12 @@ def resolve_via_trust_anchors(entity_id, trust_anchors):
 
     For each configured Trust Anchor:
       1. Fetch the TA's Entity Configuration from /.well-known/openid-federation
-      2. Find its federation_resolve_endpoint in metadata.federation_entity
-      3. Call GET {resolve_endpoint}?sub={entity_id}&trust_anchor={ta_entity_id}
-      4. The response is a JWT (application/resolve-response+jwt) signed by the TA
-      5. Verify the JWT against the TA's pre-distributed keys
-      6. Extract the resolved metadata from the payload
+      2. Extract the TA's public keys from its JWKS
+      3. Find its federation_resolve_endpoint in metadata.federation_entity
+      4. Call GET {resolve_endpoint}?sub={entity_id}&trust_anchor={ta_entity_id}
+      5. The response is a JWT (application/resolve-response+jwt) signed by the TA
+      6. Verify the JWT against the TA's public keys (fetched in step 1)
+      7. Extract the resolved metadata from the payload
 
     All configured Trust Anchors are tried in order. The first successful
     resolution wins. If all fail, FederationError is raised with details
@@ -296,7 +297,7 @@ def resolve_via_trust_anchors(entity_id, trust_anchors):
 
     Args:
         entity_id: The entity to resolve (e.g., the RP's entity identifier)
-        trust_anchors: Dict of {ta_entity_id: jwks_dict} for pre-trusted Trust Anchors
+        trust_anchors: List of TA entity IDs (e.g., ["https://ta1.example.com", "https://ta2.example.com"])
 
     Returns:
         dict: The resolve response payload containing 'metadata' (resolved,
@@ -308,14 +309,16 @@ def resolve_via_trust_anchors(entity_id, trust_anchors):
     """
     errors = []
 
-    for ta_entity_id, ta_jwks in trust_anchors.items():
+    for ta_entity_id in trust_anchors:
         try:
-            # Step 1: Fetch the TA's Entity Configuration to find its resolve endpoint
+            # Step 1: Fetch the TA's Entity Configuration and extract its keys
             ta_jwt = fetch_entity_configuration(ta_entity_id)
             ta_config = decode_entity_statement(ta_jwt)
+            ta_jwks = ta_config.get("jwks", {})
 
-            # Verify the TA's Entity Configuration against pre-distributed keys
-            verify_entity_statement(ta_jwt, ta_jwks)
+            if not ta_jwks or not ta_jwks.get("keys"):
+                errors.append(f"{ta_entity_id}: no JWKS in Entity Configuration")
+                continue
 
             fed_meta = ta_config.get("metadata", {}).get("federation_entity", {})
             resolve_endpoint = fed_meta.get("federation_resolve_endpoint")
@@ -551,7 +554,7 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         self.config = conf
         self.entity_id = fed_conf.get("entity_id", base_url)
         self.authority_hints = fed_conf["authority_hints"]
-        self.trust_anchors = _build_trust_anchor_keys(fed_conf["trust_anchors"])
+        self.trust_anchors = fed_conf.get("trust_anchors")
         self.federation_signing_alg = fed_conf.get("signing_algorithm", "ES256")
         self.entity_configuration_lifetime = fed_conf.get(
             "entity_configuration_lifetime", 86400
@@ -872,17 +875,10 @@ class OpenIDFederationFrontend(OpenIDConnectFrontend):
         # Obtém o token_endpoint dos metadados do provider para não depender de path hardcoded.
         # Um cliente legítimo deve sempre apontar o aud para o token_endpoint exato deste servidor,
         # impedindo que um client_assertion capturado seja reutilizado em outro servidor.
-
-        # Verificação importante pois garante que o padrão de path da rota token da instancia possa ser configurado para
-        # suportar configurações diferentes de path, como o padrão usado na cafe-2.0 que espera que o path da request traga
-        # o identificador da entidade representada pelo proxy. Caso não tenha configurações de rota token, utilizamos o
-        # padrão gerado pelo pyop, assim mantemos a verificação de aud consistente.
-        if "token_endpoint" in self.config["provider"]:
+        if "token_endpoint" in self.config.get("provider", {}):
             expected_audiences = [self.config["provider"]["token_endpoint"]]
         else:
-            expected_audiences = [
-                self.provider.provider_configuration.get("token_endpoint"),
-            ]
+            expected_audiences = [self.provider.provider_configuration.get("token_endpoint")]
 
         if not aud or not any(valid_aud in aud for valid_aud in expected_audiences):
             raise FederationError(
